@@ -1,16 +1,15 @@
 #!/usr/bin/env python
-# Downloads the video and audio streams from the master json url and recombines
-# it into a single file
-from __future__ import print_function
+
 import requests
 import base64
 from tqdm import tqdm
+from moviepy.editor import VideoFileClip, concatenate_videoclips
+from urllib import parse as urlparse
 import sys
 import subprocess as sp
 import os
 import distutils.core
 import argparse
-import urlparse
 import datetime
 
 import random
@@ -35,17 +34,11 @@ for directory in (TEMP_DIR, OUTPUT_DIR):
 # create temp directory right before we need it
 INSTANCE_TEMP = os.path.join(TEMP_DIR, OUT_PREFIX)
 
-# Check operating system
-OS_WIN = True if os.name == "nt" else False
+try:
+    FFMPEG_BIN = distutils.spawn.find_executable("ffmpeg")
+except AttributeError:
+    FFMPEG_BIN = 'ffmpeg'
 
-# Find ffmpeg executable
-if OS_WIN:
-    FFMPEG_BIN = 'ffmpeg.exe'
-else:
-    try:
-        FFMPEG_BIN = distutils.spawn.find_executable("ffmpeg")
-    except AttributeError:
-        FFMPEG_BIN = 'ffmpeg'
 
 def download_video(base_url, content):
     """Downloads the video portion of the content into the INSTANCE_TEMP folder"""
@@ -86,14 +79,12 @@ def download_video(base_url, content):
     video_file.close()
     return result
 
-
 def download_audio(base_url, content):
     """Downloads the video portion of the content into the INSTANCE_TEMP folder"""
     result = True
     audio = content[0]
     audio_base_url = urlparse.urljoin(base_url, audio['base_url'])
     print('audio base url:', audio_base_url)
-
 
     # Create INSTANCE_TEMP if it doesn't exist
     if not os.path.exists(INSTANCE_TEMP):
@@ -136,35 +127,64 @@ def merge_audio_video(output_filename):
             output_filename ]
     print("ffmpeg command is:", command)
 
-    if OS_WIN:
-        sp.call(command, shell=True)
-    else:
-        sp.call(command)
+    sp.call(command)
+
+
+def read_file(file_path):
+    for line in open(file_path):
+        _line = line.replace('\n', '')
+        yield _line
+
+
+def save_bad_download(url):
+    with open("errors.txt", "a+") as f:
+        f.write(url)
+
+def get_master_json_url(url):
+    res = requests.get(url)
+    reg = r"(http|https)://([\w_-]+(?:(?:\.[\w_-]+)+))([\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])?"
+    occurs = re.finditer(reg, res.text)
+    first = [c.group() for c in occurs if 'master.json' in c.group()][0]
+    return first
+
+def concat_videos(output_filename):
+    ls = os.listdir(OUTPUT_DIR)
+    ls_sorted = sorted(ls, key=lambda x: int(x.split('_')[0]))
+
+    ls_concat = []
+    for v_path in ls_sorted:
+        ls_concat.append(VideoFileClip(os.path.join(OUTPUT_DIR, v_path)))
+    
+    final_video = concatenate_videoclips(ls_concat)
+    final_video.write_videofile(output_filename)
 
 if __name__ == "__main__":
+    concat_videos("A.mp4")
+
+if __name__ == "__main_":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-u", "--url", action="store", help="master json url")
-    parser.add_argument("-o", "--output", action="store",
-                        help="output video filename without extension (mp4)",
-                        default=None)
-    parser.add_argument("-s", "--skip-download", action="store",
-                        help="merges video and audio output of already downloaded streams",
-                        metavar="TIMESTAMP")
-    parser.add_argument("--skip-merge", action="store_true",
-                        help="downloads only and doesn't merge")
+    parser.add_argument("-f", "--file", action="store", help="master json url")
     args = parser.parse_args()
 
-    # Set output filename depending on defaults
-    if args.output:
-        output_filename = os.path.join(OUTPUT_DIR, args.output + '.mp4')
-    else:
-        output_filename = os.path.join(OUTPUT_DIR, '{}_video.mp4'.format(OUT_PREFIX))
-    print("Output filename set to:", output_filename)
+    if not args.file: quit()
 
-    if not args.skip_download:
-        master_json_url = args.url
+    if not os.path.isfile(args.file):
+        print(args.file + " not a valid file")
+        quit()
 
-        # get the content
+    urls = read_file(args.file)
+    file_basename = os.path.basename(args.file.split('.')[-2])
+
+    for i, url in enumerate(urls):
+        output_filename = os.path.join(OUTPUT_DIR, f'{i}_' + file_basename + '.mp4')
+        print("Output filename set to:", output_filename)
+        
+        try:
+            master_json_url = get_master_json_url(url)
+        except expression as identifier:
+            save_bad_download(url)
+            quit()
+
         resp = requests.get(master_json_url)
         if resp.status_code != 200:
             match = re.search('<TITLE>(.+)<\/TITLE>', resp.content, re.IGNORECASE)
@@ -174,16 +194,12 @@ if __name__ == "__main__":
         content = resp.json()
         base_url = urlparse.urljoin(master_json_url, content['base_url'])
 
-        # Download the components of the stream
         if not download_video(base_url, content['video']) or not download_audio(base_url, content['audio']):
+            save_bad_download(url)
             quit()
 
-    # Overwrite timestamp if skipping download
-    if args.skip_download:
-        TIMESTAMP = args.skip_download
-        print("Overriding timestamp with:", TIMESTAMP)
-
-    # Combine audio and video
-    if not args.skip_merge:
         merge_audio_video(output_filename)
 
+        if i > 5:
+            break
+    concat_videos(output_filename)
