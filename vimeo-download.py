@@ -5,7 +5,6 @@ import base64
 from tqdm import tqdm
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from urllib import parse as urlparse
-import sys
 import subprocess as sp
 import os
 import distutils.core
@@ -15,6 +14,7 @@ import datetime
 import random
 import string
 import re
+import shutil
 
 # Prefix for this run
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -26,11 +26,6 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
-for directory in (TEMP_DIR, OUTPUT_DIR):
-    if not os.path.exists(directory):
-        print("Creating {}...".format(directory))
-        os.makedirs(directory)
-
 # create temp directory right before we need it
 INSTANCE_TEMP = os.path.join(TEMP_DIR, OUT_PREFIX)
 
@@ -39,6 +34,17 @@ try:
 except AttributeError:
     FFMPEG_BIN = 'ffmpeg'
 
+def initialize():
+    for directory in (TEMP_DIR, OUTPUT_DIR):
+        if not os.path.exists(directory):
+            print("Creating {}...".format(directory))
+            os.makedirs(directory)
+
+def clean():
+    for directory in (TEMP_DIR, OUTPUT_DIR):
+        if os.path.exists(directory):
+            print("Creating {}...".format(directory))
+            shutil.rmtree(directory)
 
 def download_video(base_url, content):
     """Downloads the video portion of the content into the INSTANCE_TEMP folder"""
@@ -129,12 +135,10 @@ def merge_audio_video(output_filename):
 
     sp.call(command)
 
-
 def read_file(file_path):
     for line in open(file_path):
         _line = line.replace('\n', '')
         yield _line
-
 
 def save_bad_download(url):
     with open("errors.txt", "a+") as f:
@@ -154,34 +158,49 @@ def concat_videos(output_filename):
     ls_concat = []
     for v_path in ls_sorted:
         ls_concat.append(VideoFileClip(os.path.join(OUTPUT_DIR, v_path)))
-    
+
     final_video = concatenate_videoclips(ls_concat)
     final_video.write_videofile(output_filename)
 
-if __name__ == "__main__":
-    concat_videos("A.mp4")
 
-if __name__ == "__main_":
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-f", "--file", action="store", help="master json url")
+    parser.add_argument("-f", "--file", action="store", help="file path contaninig vimeo urls")
+    parser.add_argument("-s", "--skip", action="store", help="skip n number of lines")
+    parser.add_argument("-o", "--output", action="store", help="Concat videos")
     args = parser.parse_args()
 
+    if args.output:
+        concat_videos(args.output)
+        quit()
+
+    # quit if not file recieved
     if not args.file: quit()
 
+    # check path valid
     if not os.path.isfile(args.file):
         print(args.file + " not a valid file")
         quit()
 
+
+    # get a generator from file
     urls = read_file(args.file)
     file_basename = os.path.basename(args.file.split('.')[-2])
 
     for i, url in enumerate(urls):
+
+        if args.skip:
+            skip = int(args.skip)
+            if i < skip:
+                continue
+
         output_filename = os.path.join(OUTPUT_DIR, f'{i}_' + file_basename + '.mp4')
         print("Output filename set to:", output_filename)
-        
+
         try:
             master_json_url = get_master_json_url(url)
-        except expression as identifier:
+        except Exception as ex:
+            # save error url on excepcion
             save_bad_download(url)
             quit()
 
@@ -191,6 +210,7 @@ if __name__ == "__main_":
             title = match.group(1)
             print('HTTP error (' + str(resp.status_code) + '): ' + title)
             quit(0)
+
         content = resp.json()
         base_url = urlparse.urljoin(master_json_url, content['base_url'])
 
@@ -200,6 +220,5 @@ if __name__ == "__main_":
 
         merge_audio_video(output_filename)
 
-        if i > 5:
-            break
-    concat_videos(output_filename)
+    # concat all files
+    concat_videos(file_basename + '.mp4')
