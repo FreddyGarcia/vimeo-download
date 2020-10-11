@@ -1,6 +1,7 @@
 asn1crypto==0.22.0
 cffi
 cryptography
+moviepy
 enum34==1.1.6
 idna==2.5
 ipaddress==1.0.18
